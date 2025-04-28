@@ -1,0 +1,42 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# OS / Editor
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Environment
+.venv/
+env/
+.vscode/
+.idea/
+*.deb.1
+/data/
+/.cache/
+/.config/
+/.gnupg/
+/.ipynb_checkpoints/
+/.ipython/
+/.jupyter/
+/.local/
+/.nv/
+/.nvwb/
+/.ssh/
+.*
+!.gitignore
+    
+# Models
+*.pth
+*.pt
+checkpoints/
+
+# Trash folder
+.Trash-1000/
