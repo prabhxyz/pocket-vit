@@ -4,3 +4,4 @@ timm
 torchmetrics
 sparseml
 matplotlib
+tqdm
