@@ -18,7 +18,7 @@ from models import get_teacher_model, get_student_model
 from utils import save_checkpoint, accuracy
 
 logging.basicConfig(
-    format='[%(asctime)s] %(levelname)s:%(message)s',
+    format='[%(asctime)s] %(levelname)s: %(message)s',
     level=logging.INFO
 )
 
@@ -26,7 +26,6 @@ def train_one_epoch(student, teacher, projector, device, loader,
                     optimizer, epoch, total_epochs, temp, λ_kd, λ_f, λ_ce):
     student.train()
     teacher.eval()
-
     mse = nn.MSELoss()
     kld = nn.KLDivLoss(log_target=True)
     ce  = nn.CrossEntropyLoss()
@@ -70,11 +69,53 @@ def validate(model, device, loader):
             total += accuracy(model(x), y)
     return total / len(loader)
 
+def plot_metrics(stats, plots_dir):
+    epochs = [s['epoch'] for s in stats]
+
+    # training loss
+    plt.figure()
+    plt.plot(epochs, [s['loss'] for s in stats], marker='o')
+    plt.xlabel('Epoch'); plt.ylabel('Training Loss')
+    plt.title('Pocket-ViT Training Loss'); plt.grid(True)
+    plt.savefig(os.path.join(plots_dir, 'training_loss.png'))
+    plt.close()
+
+    # validation accuracy
+    plt.figure()
+    plt.plot(epochs, [s['val_acc'] for s in stats], marker='o')
+    plt.xlabel('Epoch'); plt.ylabel('Validation Accuracy')
+    plt.title('Pocket-ViT Validation Accuracy'); plt.grid(True)
+    plt.savefig(os.path.join(plots_dir, 'val_accuracy.png'))
+    plt.close()
+
+    # learning rate
+    plt.figure()
+    plt.plot(epochs, [s['lr'] for s in stats], marker='o')
+    plt.xlabel('Epoch'); plt.ylabel('Learning Rate')
+    plt.title('Learning Rate Schedule'); plt.grid(True)
+    plt.savefig(os.path.join(plots_dir, 'lr_schedule.png'))
+    plt.close()
+
+    # epoch time
+    plt.figure()
+    plt.plot(epochs, [s['time_s'] for s in stats], marker='o')
+    plt.xlabel('Epoch'); plt.ylabel('Epoch Runtime (s)')
+    plt.title('Epoch Time'); plt.grid(True)
+    plt.savefig(os.path.join(plots_dir, 'epoch_time.png'))
+    plt.close()
+
+def write_csv(stats, csv_path):
+    # overwrite CSV each epoch
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=stats[0].keys())
+        writer.writeheader()
+        writer.writerows(stats)
+
 def main():
     p = argparse.ArgumentParser(
-        description="Pocket-ViT Distillation + Stats + Plots"
+        description="Pocket-ViT Distillation + continuous save & plots"
     )
-    # core hyperparams
+    # distillation hyperparams
     p.add_argument('--epochs',       type=int,   default=100)
     p.add_argument('--batch_size',   type=int,   default=128)
     p.add_argument('--lr',           type=float, default=5e-4)
@@ -85,115 +126,84 @@ def main():
     p.add_argument('--λ_f',          type=float, default=0.2)
     p.add_argument('--λ_ce',         type=float, default=0.1)
     p.add_argument('--device',       type=str,   default='cuda')
+
+    # output dirs
     p.add_argument('--output_dir',   type=str,   default='outputs')
     args = p.parse_args()
 
-    # make dirs
+    # make sure our folders exist
     models_dir = os.path.join(args.output_dir, 'models')
     plots_dir  = os.path.join(args.output_dir, 'plots')
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(plots_dir,  exist_ok=True)
+    csv_path = os.path.join(args.output_dir, 'stats.csv')
 
     logging.info(f"Using device: {args.device}")
     train_loader, val_loader, _ = get_dataloaders(args.batch_size)
-    teacher = get_teacher_model(10, args.device)
-    student = get_student_model(10, args.device)
+    teacher   = get_teacher_model(10, args.device)
+    student   = get_student_model(10, args.device)
     projector = nn.Linear(384, 192).to(args.device)
 
     optimizer = AdamW(
         list(student.parameters()) + list(projector.parameters()),
         lr=args.lr, weight_decay=args.weight_decay
     )
-
     def lr_lambda(step):
         warm = args.warmup_pct * args.epochs * len(train_loader)
         if step < warm:
             return step / max(1, warm)
         prog = (step - warm) / max(1, args.epochs * len(train_loader) - warm)
         return 0.5 * (1 + math.cos(math.pi * prog))
-
     scheduler = LambdaLR(optimizer, lr_lambda)
 
-    # trackers
-    stats = []
+    stats    = []
     best_acc = 0.0
 
     for epoch in range(1, args.epochs + 1):
         start = time.time()
-        loss = train_one_epoch(
+        loss  = train_one_epoch(
             student, teacher, projector, args.device,
             train_loader, optimizer, epoch, args.epochs,
             args.temp, args.λ_kd, args.λ_f, args.λ_ce
         )
-        acc = validate(student, args.device, val_loader)
+        acc        = validate(student, args.device, val_loader)
         epoch_time = time.time() - start
-        lr = optimizer.param_groups[0]['lr']
+        lr         = optimizer.param_groups[0]['lr']
 
         logging.info(
-            f"Epoch {epoch:03d} » Loss: {loss:.4f}  "
-            f"Val Acc: {acc:.4f}  Time: {epoch_time:.1f}s"
+            f"Epoch {epoch:03d} » loss={loss:.4f}  "
+            f"val_acc={acc:.4f}  time={epoch_time:.1f}s  lr={lr:.1e}"
         )
 
+        # record stats
         stats.append({
-            'epoch': epoch,
-            'loss': loss,
+            'epoch':   epoch,
+            'loss':    loss,
             'val_acc': acc,
-            'lr': lr,
-            'time_s': epoch_time
+            'lr':      lr,
+            'time_s':  epoch_time
         })
 
-        scheduler.step()
+        # save best-ever checkpoint
         if acc > best_acc:
             best_acc = acc
-            ckpt_path = os.path.join(models_dir, f'student_best_ep{epoch:03d}.pth')
-            save_checkpoint(student, ckpt_path)
-            logging.info(f"Saved new best model → {ckpt_path}")
+            best_path = os.path.join(models_dir, f'student_best_ep{epoch:03d}.pth')
+            save_checkpoint(student, best_path)
+            logging.info(f"  ↑ new best saved → {best_path}")
 
-    logging.info(f"Training complete. Best val acc: {best_acc:.4f}")
+        # always overwrite "latest" checkpoint
+        latest_path = os.path.join(models_dir, 'student_latest.pth')
+        save_checkpoint(student, latest_path)
 
-    # write stats CSV
-    csv_path = os.path.join(args.output_dir, 'stats.csv')
-    with open(csv_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=stats[0].keys())
-        writer.writeheader()
-        writer.writerows(stats)
-    logging.info(f"Wrote stats to {csv_path}")
+        # persist stats & plots every epoch
+        write_csv(stats, csv_path)
+        plot_metrics(stats, plots_dir)
 
-    # plot each metric
-    epochs = [s['epoch'] for s in stats]
-    # 1) Loss
-    plt.figure()
-    plt.plot(epochs, [s['loss'] for s in stats], marker='o')
-    plt.xlabel('Epoch'); plt.ylabel('Training Loss')
-    plt.title('Pocket-ViT Training Loss'); plt.grid(True)
-    plt.savefig(os.path.join(plots_dir, 'training_loss.png'))
-    plt.close()
+        # step LR
+        scheduler.step()
 
-    # 2) Val Acc
-    plt.figure()
-    plt.plot(epochs, [s['val_acc'] for s in stats], marker='o')
-    plt.xlabel('Epoch'); plt.ylabel('Validation Accuracy')
-    plt.title('Pocket-ViT Validation Accuracy'); plt.grid(True)
-    plt.savefig(os.path.join(plots_dir, 'val_accuracy.png'))
-    plt.close()
-
-    # 3) LR schedule
-    plt.figure()
-    plt.plot(epochs, [s['lr'] for s in stats], marker='o')
-    plt.xlabel('Epoch'); plt.ylabel('Learning Rate')
-    plt.title('Learning Rate Schedule'); plt.grid(True)
-    plt.savefig(os.path.join(plots_dir, 'lr_schedule.png'))
-    plt.close()
-
-    # 4) Epoch time
-    plt.figure()
-    plt.plot(epochs, [s['time_s'] for s in stats], marker='o')
-    plt.xlabel('Epoch'); plt.ylabel('Epoch Runtime (s)')
-    plt.title('Epoch Time'); plt.grid(True)
-    plt.savefig(os.path.join(plots_dir, 'epoch_time.png'))
-    plt.close()
-
-    logging.info(f"Saved plots to {plots_dir}")
+    logging.info(f"Training complete. Best val_acc = {best_acc:.4f}")
+    logging.info(f"Models in `{models_dir}`, plots in `{plots_dir}`, stats CSV at `{csv_path}`")
 
 if __name__ == '__main__':
     main()
