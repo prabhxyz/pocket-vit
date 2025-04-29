@@ -79,7 +79,7 @@ Uses QNNPACK; model size ≈ 1.3 MB, runs fine on CPU.
 | Params          | 22 M  | **< 5 M** |
 | INT8 size       | —     | ≈ 1.3 MB  |
 
-*(50 epochs is just for the demo. 100+ epochs gets me past 90 % top-1.)*
+*(I used only 50 epochs due to compute costs. 100+ epochs is ideal for 90%+ accuracy.)*
 
 ---
 
